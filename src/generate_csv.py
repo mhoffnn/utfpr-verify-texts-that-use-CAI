@@ -15,6 +15,10 @@ data = {
     "ai": {}
 }
 
+# Função para limpar o texto
+def clean_text(text):
+    return text.replace('\n', ' ').strip()
+
 # Processar arquivos humanos (enem-essays)
 for year_dir in Path(database_dir, "enem-essays").iterdir():
     if not year_dir.is_dir() or year_dir.name == "subject.txt":
@@ -29,7 +33,7 @@ for year_dir in Path(database_dir, "enem-essays").iterdir():
         
         # Extrair conteúdo do arquivo
         with open(essay_file, 'r', encoding='utf-8') as f:
-            content = f.read().strip()
+            content = clean_text(f.read())
         
         # Extrair nome do autor (se existir)
         author = essay_file.stem.split('-', 1)[-1].strip()
@@ -61,7 +65,7 @@ for year_dir in Path(database_dir, "ai-essays").iterdir():
         
         # Extrair conteúdo do arquivo
         with open(essay_file, 'r', encoding='utf-8') as f:
-            content = f.read().strip()
+            content = clean_text(f.read())
         
         data["ai"][year].append({
             "author": "ChatGPT",

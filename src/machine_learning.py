@@ -8,10 +8,12 @@ from typing import List, Tuple, Union
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, accuracy_score
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
+from sklearn.metrics import classification_report, accuracy_score, confusion_matrix, precision_recall_fscore_support
 from sklearn.exceptions import NotFittedError
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 # Configurar logging
 logging.basicConfig(
@@ -21,20 +23,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class TextClassifier:
-    def __init__(self, max_features: int = 5000, n_estimators: int = 100, test_size: float = 0.2):
+    def __init__(self, max_features: int = 1000, test_size: float = 0.2):
         """
         Inicializa o classificador de texto.
         
         Args:
             max_features (int): Número máximo de features para o TF-IDF
-            n_estimators (int): Número de árvores no Random Forest
             test_size (float): Proporção do conjunto de teste
         """
         self.max_features = max_features
-        self.n_estimators = n_estimators
         self.test_size = test_size
-        self.vectorizer = TfidfVectorizer(max_features=max_features)
-        self.model = RandomForestClassifier(n_estimators=n_estimators)
+        self.vectorizer = TfidfVectorizer(
+            max_features=max_features,
+            ngram_range=(1, 2),
+            min_df=2,
+            max_df=0.95
+        )
+        self.model = Pipeline([
+            ('clf', MultinomialNB(alpha=0.1))
+        ])
         self.lemmatizer = WordNetLemmatizer()
         self._is_fitted = False
         
@@ -69,7 +76,13 @@ class TextClassifier:
             words = [w for w in words if w not in stopwords.words('portuguese')]
             # Lematização
             words = [self.lemmatizer.lemmatize(w) for w in words]
-            return ' '.join(words)
+            processed_text = ' '.join(words)
+            
+            # Log do texto pré-processado
+            logger.debug(f"Texto original: {text[:100]}...")
+            logger.debug(f"Texto processado: {processed_text[:100]}...")
+            
+            return processed_text
         except Exception as e:
             logger.error(f"Erro no pré-processamento do texto: {str(e)}")
             raise
@@ -115,26 +128,72 @@ class TextClassifier:
         """
         try:
             # Pré-processar dados
+            logger.info("Pré-processando textos...")
             X_processed = self.preprocess_data(X)
             
             # Extrair features
+            logger.info("Extraindo features...")
             X_features = self.extract_features(X_processed)
+            logger.info(f"Número de features extraídas: {X_features.shape[1]}")
             
             # Dividir dados
+            logger.info("Dividindo dados em treino e teste...")
             X_train, X_test, y_train, y_test = train_test_split(
-                X_features, y, test_size=self.test_size, random_state=42
+                X_features, y, test_size=self.test_size, random_state=42, stratify=y
             )
             
             # Treinar modelo
+            logger.info("Treinando modelo...")
             self.model.fit(X_train, y_train)
             self._is_fitted = True
             
-            # Calcular acurácia
-            train_accuracy = accuracy_score(y_train, self.model.predict(X_train))
-            test_accuracy = accuracy_score(y_test, self.model.predict(X_test))
+            # Calcular métricas
+            logger.info("Calculando métricas...")
+            y_train_pred = self.model.predict(X_train)
+            y_test_pred = self.model.predict(X_test)
             
+            train_accuracy = accuracy_score(y_train, y_train_pred)
+            test_accuracy = accuracy_score(y_test, y_test_pred)
+            
+            # Validação cruzada estratificada
+            cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+            cv_scores = cross_val_score(self.model, X_features, y, cv=cv)
+            
+            # Métricas detalhadas
+            precision, recall, f1, _ = precision_recall_fscore_support(y_test, y_test_pred, average='binary')
+            
+            logger.info("\nMétricas de Performance:")
             logger.info(f"Acurácia no treino: {train_accuracy:.4f}")
             logger.info(f"Acurácia no teste: {test_accuracy:.4f}")
+            logger.info(f"Acurácia média na validação cruzada: {cv_scores.mean():.4f} (+/- {cv_scores.std() * 2:.4f})")
+            logger.info(f"Precisão: {precision:.4f}")
+            logger.info(f"Recall: {recall:.4f}")
+            logger.info(f"F1-Score: {f1:.4f}")
+            
+            # Matriz de confusão
+            cm = confusion_matrix(y_test, y_test_pred)
+            logger.info("\nMatriz de Confusão:")
+            logger.info(f"Verdadeiros Negativos: {cm[0,0]}")
+            logger.info(f"Falsos Positivos: {cm[0,1]}")
+            logger.info(f"Falsos Negativos: {cm[1,0]}")
+            logger.info(f"Verdadeiros Positivos: {cm[1,1]}")
+            
+            # Relatório de classificação
+            logger.info("\nRelatório de Classificação:")
+            logger.info(classification_report(y_test, y_test_pred, target_names=['humano', 'IA']))
+            
+            # Verificar overfitting
+            if train_accuracy > 0.95 and test_accuracy < 0.7:
+                logger.warning("Possível overfitting detectado!")
+            
+            # Mostrar exemplos de erros
+            logger.info("\nExemplos de erros de classificação:")
+            for i, (true, pred) in enumerate(zip(y_test, y_test_pred)):
+                if true != pred:
+                    logger.info(f"Exemplo {i}:")
+                    logger.info(f"Texto: {X_test[i][:100]}...")
+                    logger.info(f"Verdadeiro: {'humano' if true == 0 else 'IA'}")
+                    logger.info(f"Predito: {'humano' if pred == 0 else 'IA'}")
             
             return train_accuracy, test_accuracy
             
@@ -222,10 +281,30 @@ def main(csv_path: str = 'train_essays.csv'):
         logger.info(f"Carregando dados do CSV: {csv_path}")
         df = pd.read_csv(csv_path)
         
+        # Verificar dados
+        logger.info(f"\nInformações do DataFrame:")
+        logger.info(f"Total de linhas: {len(df)}")
+        logger.info(f"Colunas: {df.columns.tolist()}")
+        logger.info(f"\nDistribuição por ano:")
+        logger.info(df['year'].value_counts())
+        logger.info(f"\nDistribuição por fonte:")
+        logger.info(df['source'].value_counts())
+        
         # Preparar dados para treinamento
         X = df['content'].tolist()  # Textos para classificação
         y = df['source'].map({'human': 0, 'ai': 1}).tolist()  # Convertendo labels para 0 e 1
-        logger.info(f"Dados carregados com sucesso: {len(X)} textos e {len(y)} labels")
+        
+        # Verificar balanceamento dos dados
+        logger.info(f"\nDistribuição das classes:")
+        logger.info(f"Humanos: {y.count(0)}")
+        logger.info(f"IA: {y.count(1)}")
+        
+        # Verificar exemplos de texto
+        logger.info("\nExemplos de textos:")
+        logger.info(f"Primeiro texto humano: {X[0][:100]}...")
+        logger.info(f"Primeiro texto IA: {X[y.index(1)][:100]}...")
+        
+        logger.info(f"Dados carregados com sucesso")
         
         # Inicializar e treinar o classificador
         logger.info("Inicializando classificador...")
@@ -240,14 +319,14 @@ def main(csv_path: str = 'train_essays.csv'):
         classifier.save_model("model")
         
         logger.info(f"Treinamento concluído com sucesso!")
-        logger.info(f"Acurácia no treino: {train_acc:.4f}")
-        logger.info(f"Acurácia no teste: {test_acc:.4f}")
         
         # Exemplo de predição
         logger.info("\nExemplo de predição:")
         sample_texts = [
-            "Este é um texto de exemplo para teste",
-            "Outro texto para verificar a classificação"
+            """“Soldados da França! Do alto dessas pirâmides, quarenta séculos vos contemplam!”. Essa frase, dita por Napoleão Bonaparte aos seus soldados durante a Batalha das Pirâmides, no Egito, em junho de 1798, é uma das muitas frases de efeito que o líder francês proferiu ao longo de sua vida. Napoleão foi uma das figuras mais emblemáticas da história humana.
+            Aqueles que foram seus contemporâneos, tanto os entusiastas quanto os detratores, comparavam-no a grandes conquistadores, como Alexandre Magno, da Macedônia, e Otávio Augusto, de Roma. Sua genialidade como estrategista de guerra e suas grandes habilidades como político são, hoje, algo consensual entre os especialistas em sua biografia.""",
+            """Napoleão Bonaparte foi um dos maiores líderes militares e políticos da história. Nascido na Córsega em 1769, se destacou no exército francês durante a Revolução Francesa, aproveitando o caos político para subir ao poder. Em 1799, após um golpe de Estado, tornou-se Primeiro Cônsul e, em 1804, se coroou Imperador dos Franceses. Durante seu reinado, expandiu o império francês por grande parte da Europa, implementando reformas significativas, como o Código Napoleônico, que ainda influencia sistemas jurídicos até hoje. Sua ambição militar o levou a várias vitórias, mas também a grandes derrotas, como a fracassada invasão da Rússia em 1812, que começou sua queda.
+            Após uma série de derrotas, Napoleão foi forçado a abdicar em 1814 e exilado para a ilha de Elba. Porém, ele retornou à França em 1815, retomando o poder por um breve período conhecido como os "Cem Dias", até ser derrotado de forma definitiva na Batalha de Waterloo. Exilado novamente, agora para a remota ilha de Santa Helena, Napoleão passou seus últimos anos até sua morte em 1821. Seu legado permanece complexo: para uns, foi um tirano implacável, enquanto para outros, um líder visionário que moldou a Europa moderna."""
         ]
         predictions = classifier.predict(sample_texts)
         for text, pred in zip(sample_texts, predictions):
